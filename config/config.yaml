@@ -1,0 +1,47 @@
+# Master Experiment Configuration
+experiment:
+  seed: 1
+  project_name: "LM-Hallucinations"
+  output_dir: "./data/processed"
+
+# Target SLM Model Configurations
+models:
+  llama_3_2_3b:
+    name_or_path: "meta-llama/Llama-3.2-3B-Instruct"
+    layers: 28
+  gemma_2_2b:
+    name_or_path: "google/gemma-2-2b-it"
+    layers: 26
+  qwen_2_5_3b:
+    name_or_path: "Qwen/Qwen2.5-3B-Instruct"
+    layers: 36
+  phi_3_5_mini:
+    name_or_path: "microsoft/Phi-3.5-mini-instruct"
+    layers: 32
+  deepseek_r1_distill_1_5b:
+    name_or_path: "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+    layers: 28
+
+# Mechanistic Probing Search Configurations
+probing:
+  target_layers: "all"  # Options: 'all', or list e.g., [10, 11, 12]
+  subsample_size: 1000  # Number of probing pairs per dataset split
+  boundary_token_target: "last_token" # Token position to record activations
+
+# Execution & Batch Size Limits
+execution:
+  eval_batch_size: 8
+  max_prompt_length: 512
+  device: "cuda"
+
+# Standardized Prompt Templates per Dataset Type
+prompt_templates:
+  qa:
+    system_prompt: "You are a helpful, precise, and truthful assistant."
+    template: "<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\nContext: {knowledge}\nQuestion: {question}<|im_end|>\n<|im_start|>assistant\nAnswer: "
+  dialogue:
+    system_prompt: "You are a helpful conversational assistant."
+    template: "<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\nContext: {knowledge}\nHistory: {history}<|im_end|>\n<|im_start|>assistant\n"
+  general:
+    system_prompt: "Answer the following question truthfully and concisely."
+    template: "<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{question}<|im_end|>\n<|im_start|>assistant\n"
