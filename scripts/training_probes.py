@@ -5,86 +5,60 @@ import numpy as np
 import argparse
 from pathlib import Path
 from typing import Dict, List, Any
-from sklearn.linear_model import LogisticRegression
 from model_loader import SUPPORTED_MODELS
 
 
-def train_l1_probe(
-        X: np.ndarray,
-        y: np.ndarray,
-        C: float = 0.1,
-        max_iter: int = 1000
-) -> np.ndarray:
-    """
-    Trains an L1-regularized Logistic Regression classifier to enforce sparsity
-    and isolate predictive H-neuron weights.
-
-    Args:
-        X: Feature matrix of shape (n_samples, num_neurons)
-        y: Labels (0 = factual, 1 = hallucinated)
-        C: Inverse regularization strength (smaller C = stronger L1 penalty/sparsity)
-    """
-    clf = LogisticRegression(
-        penalty='l1',
-        solver='liblinear',
-        C=C,
-        random_state=42,
-        max_iter=max_iter
-    )
-    clf.fit(X, y)
-
-    # Absolute magnitude of learned coefficients reflects neuron importance
-    return np.abs(clf.coef_.squeeze())
-
-
 def run_probe_training(
-        probes_dir: str = "data/probes",
-        output_config: str = "config/h_neurons.json",
-        top_k_values: List[int] = [10, 50, 100, 200]
+    probes_dir: str = "data/probes",
+    output_config: str = "config/h_neurons.json",
+    top_k_values: List[int] = [10, 50, 100, 200]
 ):
-    """Iterates over cached activations for all SLMs and extracts top-K candidate H-neurons."""
+    """Aggregates per-split probed metrics and outputs top-K candidate H-neuron configurations."""
     os.makedirs(os.path.dirname(output_config), exist_ok=True)
     h_neuron_mapping: Dict[str, Any] = {}
+    probes_path = Path(probes_dir)
 
     for model_key in SUPPORTED_MODELS.keys():
-        probe_path = Path(probes_dir) / f"{model_key}_hneurons.pt"
-        if not probe_path.exists():
-            print(
-                f"[!] Warning: Probe file {probe_path} not found. Skipping {model_key}. (Run probe_hneurons.py first)")
+        # Locate all per-split files generated for this model (e.g. deepseek-r1-1.5b_qa_hneurons.pt)
+        split_files = list(probes_path.glob(f"{model_key}_*_hneurons.pt"))
+
+        if not split_files:
+            print(f"[!] Warning: No split probe files found for '{model_key}' in {probes_dir}. Skipping...")
             continue
 
-        print(f"\n[+] Training L1 Probes for Model: {model_key}")
-        probe_data = torch.load(probe_path)
+        print(f"\n[+] Aggregating {len(split_files)} split probe file(s) for Model: {model_key}")
 
+        # Accumulate metrics across available splits
+        layer_accumulators: Dict[str, Dict[str, torch.Tensor]] = {}
+
+        for sf in split_files:
+            split_data = torch.load(sf)
+            for layer_key, layer_metrics in split_data.items():
+                if layer_key not in layer_accumulators:
+                    layer_accumulators[layer_key] = {
+                        "contrastive_score": torch.zeros_like(layer_metrics["contrastive_score"]),
+                        "magnitude_diff": torch.zeros_like(layer_metrics["magnitude_diff"])
+                    }
+                layer_accumulators[layer_key]["contrastive_score"] += layer_metrics["contrastive_score"]
+                layer_accumulators[layer_key]["magnitude_diff"] += layer_metrics["magnitude_diff"]
+
+        # Average across splits and collect global neuron candidate rankings
         all_layer_scores: List[Dict[str, Any]] = []
 
-        for layer_key, layer_metrics in probe_data.items():
-            # Extract raw mean activations as proxy representation matrices
-            f_means = layer_metrics["raw_factual_mean"].numpy()
-            h_means = layer_metrics["raw_hallucinated_mean"].numpy()
+        for layer_key, acc_metrics in layer_accumulators.items():
+            avg_contrastive = acc_metrics["contrastive_score"] / len(split_files)
+            avg_magnitude = acc_metrics["magnitude_diff"] / len(split_files)
 
-            # Construct synthetic balanced probe dataset from contrastive distributions
-            # X shape: (n_samples, hidden_dim), y: binary classification labels
-            n_samples_per_class = 100
-            f_samples = f_means + np.random.normal(0, 0.01, size=(n_samples_per_class, f_means.shape[0]))
-            h_samples = h_means + np.random.normal(0, 0.01, size=(n_samples_per_class, h_means.shape[0]))
+            # Combined importance score based on contrastive shift & magnitude diff
+            importance_scores = avg_contrastive * avg_magnitude
 
-            X = np.vstack([f_samples, h_samples])
-            y = np.hstack([np.zeros(n_samples_per_class), np.ones(n_samples_per_class)])
-
-            # Fit L1 Probe
-            l1_weights = train_l1_probe(X, y, C=0.1)
-
-            # Combine L1 probe weights with contrastive variance score
-            contrastive_score = layer_metrics["contrastive_score"].numpy()
-            combined_importance = l1_weights * contrastive_score
-
-            for neuron_idx, score in enumerate(combined_importance):
-                if score > 0:
+            for neuron_idx, score_val in enumerate(importance_scores):
+                score_float = float(score_val.item())
+                if score_float > 0:
                     all_layer_scores.append({
                         "layer": layer_key,
                         "neuron_idx": int(neuron_idx),
-                        "score": float(score)
+                        "score": score_float
                     })
 
         # Sort candidate neurons globally across all layers by importance score
@@ -103,18 +77,18 @@ def run_probe_training(
             ]
 
         h_neuron_mapping[model_key] = model_k_map
-        print(f"[+] Successfully mapped top-{top_k_values} candidate H-neurons for {model_key}.")
+        print(f"[✓] Mapped top-{top_k_values} candidate H-neurons for {model_key}.")
 
     # Save mapping to config/h_neurons.json
-    with open(output_config, "w") as f:
+    with open(output_config, "w", encoding="utf-8") as f:
         json.dump(h_neuron_mapping, f, indent=2)
 
-    print(f"\n[+] Saved complete candidate H-neuron mapping to: {output_config}")
+    print(f"\n[+] Saved candidate H-neuron configuration mapping to: {output_config}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train L1 probes and output top-K candidate H-neuron configuration.")
-    parser.add_argument("--probes_dir", type=str, default="data/probes", help="Path to cached probing tensors.")
+    parser = argparse.ArgumentParser(description="Extract top-K candidate H-neuron configurations from split probes.")
+    parser.add_argument("--probes_dir", type=str, default="data/probes", help="Path to cached probing split tensors.")
     parser.add_argument("--output_config", type=str, default="config/h_neurons.json", help="Destination JSON path.")
 
     args = parser.parse_args()

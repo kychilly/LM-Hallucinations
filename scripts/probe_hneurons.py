@@ -1,4 +1,5 @@
 import os
+import gc
 import json
 import torch
 import argparse
@@ -51,7 +52,7 @@ def run_probing_pipeline(
     output_dir: str = "data/probes",
     batch_size: int = 8
 ):
-    """Executes forward passes across probing pairs and saves top candidate H-neurons."""
+    """Executes forward passes across probing pairs and saves top candidate H-neurons per split."""
     print(f"\n[+] Starting Neuron Probing for Model: {model_key}")
 
     # 1. Load Preprocessed Dataset
@@ -59,16 +60,19 @@ def run_probing_pipeline(
         raise FileNotFoundError(f"Processed dataset not found at '{data_dir}'. Run preprocess.py first.")
 
     ds_dict = load_from_disk(data_dir)
+    os.makedirs(output_dir, exist_ok=True)
 
     # 2. Initialize Model Wrapper & Attach Hooks across all layers
     model_wrapper = ModelWrapper(model_key=model_key)
     model_wrapper.attach_layer_hooks(layer_indices=None)  # Attach to all decoder layers
 
-    layer_scores = {}
-
     # Iterate over splits in dataset (e.g., qa, dialogue, summarization, general)
     for split_name in ds_dict.keys():
-        print(f"[+] Processing Split: {split_name}")
+        split_save_path = Path(output_dir) / f"{model_key}_{split_name}_hneurons.pt"
+        if split_save_path.exists():
+            print(f"[+] Split '{split_name}' already complete ({split_save_path}). Skipping...")
+            continue
+        print(f"\n[+] Processing Split: {split_name}")
         split_ds = ds_dict[split_name]
 
         # Extract full sequence texts output by preprocess.py
@@ -97,10 +101,16 @@ def run_probing_pipeline(
                     split_layer_acts_h[layer_key] = []
 
                 # Take last token activation per prompt in batch
-                split_layer_acts_f[layer_key].append(f_acts[layer_key][:, -1, :])
-                split_layer_acts_h[layer_key].append(h_acts[layer_key][:, -1, :])
+                split_layer_acts_f[layer_key].append(f_acts[layer_key][:, -1, :].cpu())
+                split_layer_acts_h[layer_key].append(h_acts[layer_key][:, -1, :].cpu())
 
-        # Aggregate across batches and compute scores per layer
+            # Clear forward-pass caches to prevent RAM accumulation
+            del f_acts, h_acts
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # Compute scores per layer for this specific split
+        split_scores = {}
         for layer_key in split_layer_acts_f.keys():
             all_f = torch.cat(split_layer_acts_f[layer_key], dim=0)
             all_h = torch.cat(split_layer_acts_h[layer_key], dim=0)
@@ -110,38 +120,29 @@ def run_probing_pipeline(
                 all_h.unsqueeze(1)
             )
 
-            if layer_key not in layer_scores:
-                layer_scores[layer_key] = {
-                    "magnitude_diff": torch.zeros_like(scores["magnitude_diff"]),
-                    "contrastive_score": torch.zeros_like(scores["contrastive_score"])
-                }
+            top_k_indices = torch.topk(
+                scores["contrastive_score"],
+                k=min(200, len(scores["contrastive_score"]))
+            ).indices.tolist()
 
-            # Accumulate scores across dataset splits
-            layer_scores[layer_key]["magnitude_diff"] += scores["magnitude_diff"]
-            layer_scores[layer_key]["contrastive_score"] += scores["contrastive_score"]
+            split_scores[layer_key] = {
+                "magnitude_diff": scores["magnitude_diff"],
+                "contrastive_score": scores["contrastive_score"],
+                "top_candidate_indices": top_k_indices
+            }
 
-    # 3. Format and Export Top Candidate Neurons
-    os.makedirs(output_dir, exist_ok=True)
-    summary_path = Path(output_dir) / f"{model_key}_hneurons.pt"
+        # Save split output to disk immediately
+        split_save_path = Path(output_dir) / f"{model_key}_{split_name}_hneurons.pt"
+        torch.save(split_scores, split_save_path)
+        print(f"[✓] Saved split result to disk: {split_save_path}")
 
-    export_payload = {}
-    for layer_key, metrics in layer_scores.items():
-        # Average across dataset splits
-        avg_mag = metrics["magnitude_diff"] / len(ds_dict.keys())
-        avg_contrastive = metrics["contrastive_score"] / len(ds_dict.keys())
+        # Purge references and release memory before next split
+        del split_layer_acts_f, split_layer_acts_h, split_scores, factual_prompts, hallucinated_prompts
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-        # Top candidate neurons based on contrastive score
-        top_k_indices = torch.topk(avg_contrastive, k=min(200, len(avg_contrastive))).indices.tolist()
-
-        export_payload[layer_key] = {
-            "magnitude_diff": avg_mag,
-            "contrastive_score": avg_contrastive,
-            "top_candidate_indices": top_k_indices
-        }
-
-    torch.save(export_payload, summary_path)
-    print(f"\n[+] Probing completed successfully!")
-    print(f"[+] Probing metrics saved to: {summary_path}")
+    print(f"\n[+] Probing completed successfully across all splits!")
 
 
 if __name__ == "__main__":
