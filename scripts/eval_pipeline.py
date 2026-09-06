@@ -1,15 +1,26 @@
 import os
+import sys
 import json
 import torch
 import argparse
 from pathlib import Path
 from typing import Dict, List, Any
 
-# lm-evaluation-harness imports
+# 1. Modify Python path FIRST before importing local submodules
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# 2. Set environment variables
+os.environ["OMP_NUM_THREADS"] = "4"
+
+# 3. Third-party imports
 import lm_eval
 from lm_eval.models.huggingface import HFLM
+from lm_eval.tasks import TaskManager
 
-from model_loader import SUPPORTED_MODELS, ModelWrapper
+# 4. Local module imports (resolvable from project root)
+from scripts.model_loader import SUPPORTED_MODELS, ModelWrapper
 from hooks.ablation_hooks import (
     HardZeroAblationHook,
     SoftSuppressionHook,
@@ -55,10 +66,10 @@ def load_target_neurons(config_path: str, model_key: str, k_val: int) -> Dict[in
 
 
 def build_intervention_hook(
-    condition: str,
-    target_neurons: Dict[int, List[int]],
-    hidden_dim: int,
-    seed: int
+        condition: str,
+        target_neurons: Dict[int, List[int]],
+        hidden_dim: int,
+        seed: int
 ):
     """Instantiates corresponding ablation hook based on specified condition name."""
     if condition == "M1":
@@ -73,19 +84,22 @@ def build_intervention_hook(
 
 
 def run_evaluation_sweep(
-    model_key: str,
-    config_path: str = "config/h_neurons.json",
-    output_dir: str = "results/eval_outputs",
-    batch_size: int = 4
+        model_key: str,
+        config_path: str = "config/h_neurons.json",
+        output_dir: str = "results/eval_outputs",
+        batch_size: int = 1
 ):
     """Executes multi-seed, multi-condition benchmark sweep for a given model."""
     os.makedirs(output_dir, exist_ok=True)
     print(f"\n[+] Initializing Evaluation Suite for Model: {model_key}")
 
-    # Initialize model wrapper
+    # Initialize model wrapper and task manager
     wrapper = ModelWrapper(model_key=model_key)
     lm_obj = HFLM(pretrained=wrapper.model, tokenizer=wrapper.tokenizer, batch_size=batch_size)
     hidden_dim = wrapper.model.config.hidden_size
+
+    # Custom task manager to register local tasks like xstest from tasks/
+    task_manager = TaskManager(include_path="tasks")
 
     # Conditions list: M0 = Baseline control
     conditions = ["M0", "M1", "M2", "M3", "M4"]
@@ -120,7 +134,8 @@ def run_evaluation_sweep(
                         model=lm_obj,
                         tasks=EVAL_BENCHMARKS,
                         num_fewshot=0,
-                        random_seed=seed
+                        random_seed=seed,
+                        task_manager=task_manager,
                     )
 
                     # Save evaluation outputs
@@ -146,7 +161,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run evaluation sweep across ablation conditions.")
     parser.add_argument("--model_key", type=str, default="deepseek-r1-1.5b", choices=list(SUPPORTED_MODELS.keys()))
     parser.add_argument("--config_path", type=str, default="config/h_neurons.json")
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=1)
 
     args = parser.parse_args()
     run_evaluation_sweep(

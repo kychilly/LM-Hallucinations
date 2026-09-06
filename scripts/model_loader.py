@@ -57,7 +57,7 @@ class ModelWrapper:
         print(f"[+] Loading Tokenizer: {self.model_name_or_path}")
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name_or_path,
-            trust_remote_code=True
+            trust_remote_code=False
         )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -67,7 +67,8 @@ class ModelWrapper:
             self.model_name_or_path,
             torch_dtype=torch_dtype,
             device_map=device,
-            trust_remote_code=True
+            trust_remote_code=False,
+            attn_implementation="eager"
         )
         self.model.eval()
         self.cache = ActivationCache()

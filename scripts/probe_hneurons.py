@@ -15,8 +15,8 @@ load_dotenv()
 
 
 def compute_neuron_scores(
-    factual_acts: torch.Tensor,
-    hallucinated_acts: torch.Tensor
+        factual_acts: torch.Tensor,
+        hallucinated_acts: torch.Tensor
 ) -> Dict[str, torch.Tensor]:
     """
     Computes single-neuron contribution scores given paired factual vs hallucinated activations.
@@ -47,10 +47,10 @@ def compute_neuron_scores(
 
 
 def run_probing_pipeline(
-    model_key: str,
-    data_dir: str = "data/processed/halueval_probing_pairs",
-    output_dir: str = "data/probes",
-    batch_size: int = 8
+        model_key: str,
+        data_dir: str = "data/processed/halueval_probing_pairs",
+        output_dir: str = "data/probes",
+        batch_size: int = 8
 ):
     """Executes forward passes across probing pairs and saves top candidate H-neurons per split."""
     print(f"\n[+] Starting Neuron Probing for Model: {model_key}")
@@ -69,9 +69,12 @@ def run_probing_pipeline(
     # Iterate over splits in dataset (e.g., qa, dialogue, summarization, general)
     for split_name in ds_dict.keys():
         split_save_path = Path(output_dir) / f"{model_key}_{split_name}_hneurons.pt"
+
+        # Instant skip guard: if the .pt file exists, do not re-run this split
         if split_save_path.exists():
-            print(f"[+] Split '{split_name}' already complete ({split_save_path}). Skipping...")
+            print(f"[+] Split '{split_name}' already completed ({split_save_path}). Skipping completely...")
             continue
+
         print(f"\n[+] Processing Split: {split_name}")
         split_ds = ds_dict[split_name]
 
@@ -85,8 +88,8 @@ def run_probing_pipeline(
         split_layer_acts_h = {}
 
         for b in tqdm(range(num_batches), desc=f"Probing {split_name}"):
-            f_batch = factual_prompts[b * batch_size : (b + 1) * batch_size]
-            h_batch = hallucinated_prompts[b * batch_size : (b + 1) * batch_size]
+            f_batch = factual_prompts[b * batch_size: (b + 1) * batch_size]
+            h_batch = hallucinated_prompts[b * batch_size: (b + 1) * batch_size]
 
             # Forward pass: Factual Prompts
             _, f_acts = model_wrapper.run_with_caching(f_batch)
@@ -131,8 +134,7 @@ def run_probing_pipeline(
                 "top_candidate_indices": top_k_indices
             }
 
-        # Save split output to disk immediately
-        split_save_path = Path(output_dir) / f"{model_key}_{split_name}_hneurons.pt"
+        # Save split output to disk immediately upon split completion
         torch.save(split_scores, split_save_path)
         print(f"[✓] Saved split result to disk: {split_save_path}")
 
