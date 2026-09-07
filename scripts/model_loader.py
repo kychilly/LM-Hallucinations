@@ -1,5 +1,6 @@
 import torch
 from dotenv import load_dotenv
+
 load_dotenv()
 from typing import Dict, Any, List, Optional, Tuple
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -47,12 +48,24 @@ class ActivationCache:
 
 
 class ModelWrapper:
-    def __init__(self, model_key: str, device: str = "auto", torch_dtype: torch.dtype = torch.bfloat16):
+    def __init__(
+            self,
+            model_key: str,
+            device: str = "auto",
+            torch_dtype: Optional[torch.dtype] = None
+    ):
         if model_key not in SUPPORTED_MODELS:
             raise ValueError(f"Model key '{model_key}' not supported. Choose from: {list(SUPPORTED_MODELS.keys())}")
 
         self.model_name_or_path = SUPPORTED_MODELS[model_key]
         self.device = device if device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Automatically fall back to float16 on T4 / Turing GPUs if dtype isn't explicitly supplied
+        if torch_dtype is None:
+            if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8:
+                torch_dtype = torch.float16
+            else:
+                torch_dtype = torch.bfloat16
 
         print(f"[+] Loading Tokenizer: {self.model_name_or_path}")
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -62,13 +75,15 @@ class ModelWrapper:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        print(f"[+] Loading Model: {self.model_name_or_path} on device: {self.device}")
+        print(f"[+] Loading Model: {self.model_name_or_path} on device: {self.device} with dtype: {torch_dtype}")
+
+        # Use sdpa for scaled dot-product attention supported natively on T4
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name_or_path,
-            torch_dtype=torch_dtype,
+            dtype=torch_dtype,
             device_map=device,
             trust_remote_code=False,
-            attn_implementation="eager"
+            attn_implementation="sdpa"
         )
         self.model.eval()
         self.cache = ActivationCache()
@@ -89,8 +104,9 @@ class ModelWrapper:
         target_indices = layer_indices if layer_indices is not None else list(range(len(layers)))
 
         for idx in target_indices:
-            layer_module = layers[idx]
-            self.cache.register_layer(layer_module, f"layer_{idx}")
+            abs_idx = idx if idx >= 0 else len(layers) + idx
+            layer_module = layers[abs_idx]
+            self.cache.register_layer(layer_module, f"layer_{abs_idx}")
 
         print(f"[+] Attached forward hooks to {len(target_indices)} layers.")
 
@@ -111,5 +127,13 @@ if __name__ == "__main__":
     # Sanity check with a lightweight model key
     loader = ModelWrapper("deepseek-r1-1.5b")
     loader.attach_layer_hooks(layer_indices=[-1])  # Target last layer
+
+    if hasattr(loader.model, "model") and hasattr(loader.model.model, "layers"):
+        num_layers = len(loader.model.model.layers)
+    else:
+        num_layers = len(loader.model.transformer.h)
+
+    last_layer_key = f"layer_{num_layers - 1}"
+
     _, activations = loader.run_with_caching(["Testing activation extraction pipeline."])
-    print("Extracted activations shape (Layer -1):", activations["layer_-1"].shape)
+    print(f"Extracted activations shape ({last_layer_key}):", activations[last_layer_key].shape)

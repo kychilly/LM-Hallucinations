@@ -5,6 +5,7 @@ import torch
 import argparse
 from pathlib import Path
 from typing import Dict, List, Any
+import gc
 
 # 1. Pathing setup
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -42,6 +43,21 @@ EVAL_BENCHMARKS = [
 
 SEEDS = [1, 10, 100, 1000, 10000]
 K_VALUES = [1, 10, 50, 100, 200]
+
+
+def cleanup_gpu_memory(wrapper: ModelWrapper = None, lm_obj: HFLM = None):
+    """Frees CUDA memory and clears PyTorch caches after execution."""
+    if lm_obj is not None:
+        del lm_obj
+    if wrapper is not None:
+        if hasattr(wrapper, "cache"):
+            wrapper.cache.remove_hooks()
+            wrapper.cache.clear()
+        del wrapper.model
+        del wrapper.tokenizer
+        del wrapper
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 def load_target_neurons(config_path: str, model_key: str, k_val: int) -> Dict[int, List[int]]:
@@ -93,65 +109,72 @@ def run_evaluation_sweep(
     os.makedirs(output_dir, exist_ok=True)
     print(f"\n[+] Initializing Evaluation Suite for Model: {model_key}")
 
-    # Load model wrapper and initialize HFLM object once
-    wrapper = ModelWrapper(model_key=model_key)
-    lm_obj = HFLM(pretrained=wrapper.model, tokenizer=wrapper.tokenizer, batch_size=batch_size)
-    hidden_dim = wrapper.model.config.hidden_size
+    wrapper = None
+    lm_obj = None
 
-    # Shared task manager pre-loads dataset index definitions
-    task_manager = TaskManager(include_path="tasks")
+    try:
+        # Load model wrapper and initialize HFLM object once
+        wrapper = ModelWrapper(model_key=model_key)
+        lm_obj = HFLM(pretrained=wrapper.model, tokenizer=wrapper.tokenizer, batch_size=batch_size)
+        hidden_dim = wrapper.model.config.hidden_size
 
-    conditions = ["M0", "M1", "M2", "M3", "M4"]
+        # Shared task manager pre-loads dataset index definitions
+        task_manager = TaskManager(include_path="tasks")
 
-    for seed in SEEDS:
-        torch.manual_seed(seed)
+        conditions = ["M0", "M1", "M2", "M3", "M4"]
 
-        for condition in conditions:
-            k_list = [0] if condition == "M0" else K_VALUES
+        for seed in SEEDS:
+            torch.manual_seed(seed)
 
-            for k_val in k_list:
-                run_id = f"{model_key}_{condition}_k{k_val}_seed{seed}"
-                out_file = Path(output_dir) / f"{run_id}.json"
+            for condition in conditions:
+                k_list = [0] if condition == "M0" else K_VALUES
 
-                if out_file.exists():
-                    print(f"[+] Run {run_id} already completed. Skipping...")
-                    continue
+                for k_val in k_list:
+                    run_id = f"{model_key}_{condition}_k{k_val}_seed{seed}"
+                    out_file = Path(output_dir) / f"{run_id}.json"
 
-                print(f"[->] Executing Run: {run_id}")
+                    if out_file.exists():
+                        print(f"[+] Run {run_id} already completed. Skipping...")
+                        continue
 
-                hook = None
-                if condition != "M0":
-                    target_neurons = load_target_neurons(config_path, model_key, k_val)
-                    hook = build_intervention_hook(condition, target_neurons, hidden_dim, seed)
-                    if hook:
-                        hook.register_hooks(wrapper.model)
+                    print(f"[->] Executing Run: {run_id}")
 
-                try:
-                    eval_results = lm_eval.simple_evaluate(
-                        model=lm_obj,
-                        tasks=EVAL_BENCHMARKS,
-                        num_fewshot=0,
-                        random_seed=seed,
-                        task_manager=task_manager,
-                        limit=limit
-                    )
+                    hook = None
+                    if condition != "M0":
+                        target_neurons = load_target_neurons(config_path, model_key, k_val)
+                        hook = build_intervention_hook(condition, target_neurons, hidden_dim, seed)
+                        if hook:
+                            hook.register_hooks(wrapper.model)
 
-                    save_payload = {
-                        "model_key": model_key,
-                        "condition": condition,
-                        "k_value": k_val,
-                        "seed": seed,
-                        "results": eval_results["results"]
-                    }
+                    try:
+                        eval_results = lm_eval.simple_evaluate(
+                            model=lm_obj,
+                            tasks=EVAL_BENCHMARKS,
+                            num_fewshot=0,
+                            random_seed=seed,
+                            task_manager=task_manager,
+                            limit=limit
+                        )
 
-                    with open(out_file, "w", encoding="utf-8") as f:
-                        json.dump(save_payload, f, indent=2)
+                        save_payload = {
+                            "model_key": model_key,
+                            "condition": condition,
+                            "k_value": k_val,
+                            "seed": seed,
+                            "results": eval_results["results"]
+                        }
 
-                    print(f"[✓] Saved: {out_file}")
+                        with open(out_file, "w", encoding="utf-8") as f:
+                            json.dump(save_payload, f, indent=2)
 
-                finally:
-                    if hook:
-                        hook.remove_hooks()
+                        print(f"[✓] Saved: {out_file}")
+
+                    finally:
+                        if hook:
+                            hook.remove_hooks()
+
+    finally:
+        cleanup_gpu_memory(wrapper, lm_obj)
 
 
 if __name__ == "__main__":
