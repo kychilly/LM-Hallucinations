@@ -6,12 +6,12 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Any
 
-# 1. Modify Python path FIRST before importing local submodules
+# 1. Pathing setup
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# 2. Set CPU multithreading environment variables to maximize hardware usage
+# 2. Maximize CPU execution speed for local execution
 os.environ["OMP_NUM_THREADS"] = "8"
 os.environ["MKL_NUM_THREADS"] = "8"
 torch.set_num_threads(8)
@@ -22,7 +22,7 @@ import lm_eval
 from lm_eval.models.huggingface import HFLM
 from lm_eval.tasks import TaskManager
 
-# 4. Local module imports
+# 4. Local imports
 from scripts.model_loader import SUPPORTED_MODELS, ModelWrapper
 from hooks.ablation_hooks import (
     HardZeroAblationHook,
@@ -47,7 +47,7 @@ K_VALUES = [1, 10, 50, 100, 200]
 def load_target_neurons(config_path: str, model_key: str, k_val: int) -> Dict[int, List[int]]:
     """Extracts top-K target neuron mapping per layer from config/h_neurons.json."""
     if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Configuration file not found at {config_path}. Run train_probes.py first.")
+        raise FileNotFoundError(f"Configuration file not found at {config_path}.")
 
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
@@ -68,12 +68,7 @@ def load_target_neurons(config_path: str, model_key: str, k_val: int) -> Dict[in
     return layer_mapping
 
 
-def build_intervention_hook(
-        condition: str,
-        target_neurons: Dict[int, List[int]],
-        hidden_dim: int,
-        seed: int
-):
+def build_intervention_hook(condition: str, target_neurons: Dict[int, List[int]], hidden_dim: int, seed: int):
     """Instantiates corresponding ablation hook based on specified condition name."""
     if condition == "M1":
         return HardZeroAblationHook(target_neurons_per_layer=target_neurons)
@@ -86,33 +81,32 @@ def build_intervention_hook(
     return None
 
 
+@torch.no_grad()
 def run_evaluation_sweep(
-        model_key: str,
-        config_path: str = "config/h_neurons.json",
-        output_dir: str = "results/eval_outputs",
-        batch_size: int = 4,
-        limit: int = 100
+    model_key: str,
+    config_path: str = "config/h_neurons.json",
+    output_dir: str = "results/eval_outputs",
+    batch_size: int = 4,
+    limit: int = 50
 ):
     """Executes multi-seed, multi-condition benchmark sweep for a given model."""
     os.makedirs(output_dir, exist_ok=True)
     print(f"\n[+] Initializing Evaluation Suite for Model: {model_key}")
 
-    # Initialize model wrapper and task manager
+    # Load model wrapper and initialize HFLM object once
     wrapper = ModelWrapper(model_key=model_key)
     lm_obj = HFLM(pretrained=wrapper.model, tokenizer=wrapper.tokenizer, batch_size=batch_size)
     hidden_dim = wrapper.model.config.hidden_size
 
-    # Custom task manager to register local tasks like xstest from tasks/
+    # Shared task manager pre-loads dataset index definitions
     task_manager = TaskManager(include_path="tasks")
 
-    # Conditions list: M0 = Baseline control
     conditions = ["M0", "M1", "M2", "M3", "M4"]
 
     for seed in SEEDS:
         torch.manual_seed(seed)
 
         for condition in conditions:
-            # Baseline M0 does not vary with K
             k_list = [0] if condition == "M0" else K_VALUES
 
             for k_val in k_list:
@@ -123,7 +117,7 @@ def run_evaluation_sweep(
                     print(f"[+] Run {run_id} already completed. Skipping...")
                     continue
 
-                print(f"\n[->] Executing Run: {run_id}")
+                print(f"[->] Executing Run: {run_id}")
 
                 hook = None
                 if condition != "M0":
@@ -132,7 +126,6 @@ def run_evaluation_sweep(
                     if hook:
                         hook.register_hooks(wrapper.model)
 
-                # Execute evaluation across standard benchmarks via lm-eval harness
                 try:
                     eval_results = lm_eval.simple_evaluate(
                         model=lm_obj,
@@ -143,7 +136,6 @@ def run_evaluation_sweep(
                         limit=limit
                     )
 
-                    # Save evaluation outputs
                     save_payload = {
                         "model_key": model_key,
                         "condition": condition,
@@ -155,7 +147,7 @@ def run_evaluation_sweep(
                     with open(out_file, "w", encoding="utf-8") as f:
                         json.dump(save_payload, f, indent=2)
 
-                    print(f"[✓] Saved run results to: {out_file}")
+                    print(f"[✓] Saved: {out_file}")
 
                 finally:
                     if hook:
@@ -167,7 +159,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_key", type=str, default="deepseek-r1-1.5b", choices=list(SUPPORTED_MODELS.keys()))
     parser.add_argument("--config_path", type=str, default="config/h_neurons.json")
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--limit", type=int, default=100, help="Number of samples per benchmark split to evaluate")
+    parser.add_argument("--limit", type=int, default=50, help="Number of samples per benchmark split")
 
     args = parser.parse_args()
     run_evaluation_sweep(
