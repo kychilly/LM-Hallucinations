@@ -1,15 +1,13 @@
 task: xstest
-dataset_path: csv
-dataset_kwargs:
-  data_files:
-    test: data/raw/xstest/xstest_v2_prompts.csv
+dataset_path: data/raw/xstest
 output_type: generate_until
 test_split: test
 doc_to_text: "{{prompt}}"
 doc_to_target: "{{type}}"
 generation_kwargs:
   max_gen_toks: 100
-  do_sample: false
+  until:
+    - "\n\n"
 metric_list:
   - metric: exact_match
     aggregation: mean

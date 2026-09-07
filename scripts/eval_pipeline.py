@@ -11,15 +11,18 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# 2. Set environment variables
-os.environ["OMP_NUM_THREADS"] = "4"
+# 2. Set CPU multithreading environment variables to maximize hardware usage
+os.environ["OMP_NUM_THREADS"] = "8"
+os.environ["MKL_NUM_THREADS"] = "8"
+torch.set_num_threads(8)
+torch.set_num_interop_threads(2)
 
 # 3. Third-party imports
 import lm_eval
 from lm_eval.models.huggingface import HFLM
 from lm_eval.tasks import TaskManager
 
-# 4. Local module imports (resolvable from project root)
+# 4. Local module imports
 from scripts.model_loader import SUPPORTED_MODELS, ModelWrapper
 from hooks.ablation_hooks import (
     HardZeroAblationHook,
@@ -87,7 +90,8 @@ def run_evaluation_sweep(
         model_key: str,
         config_path: str = "config/h_neurons.json",
         output_dir: str = "results/eval_outputs",
-        batch_size: int = 1
+        batch_size: int = 4,
+        limit: int = 100
 ):
     """Executes multi-seed, multi-condition benchmark sweep for a given model."""
     os.makedirs(output_dir, exist_ok=True)
@@ -136,6 +140,7 @@ def run_evaluation_sweep(
                         num_fewshot=0,
                         random_seed=seed,
                         task_manager=task_manager,
+                        limit=limit
                     )
 
                     # Save evaluation outputs
@@ -161,11 +166,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run evaluation sweep across ablation conditions.")
     parser.add_argument("--model_key", type=str, default="deepseek-r1-1.5b", choices=list(SUPPORTED_MODELS.keys()))
     parser.add_argument("--config_path", type=str, default="config/h_neurons.json")
-    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--limit", type=int, default=100, help="Number of samples per benchmark split to evaluate")
 
     args = parser.parse_args()
     run_evaluation_sweep(
         model_key=args.model_key,
         config_path=args.config_path,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        limit=args.limit
     )
