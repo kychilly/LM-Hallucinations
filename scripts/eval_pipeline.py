@@ -3,9 +3,12 @@ import sys
 import json
 import torch
 import argparse
+import gc
 from pathlib import Path
 from typing import Dict, List, Any
-import gc
+
+# Set CUDA allocator configuration to prevent memory fragmentation on T4/Colab GPUs
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 # 1. Pathing setup
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -32,13 +35,13 @@ from hooks.ablation_hooks import (
     RandomPruningControlHook,
 )
 
+# Benchmark suite without 'xstest'
 EVAL_BENCHMARKS = [
     "truthfulqa_mc1",
     "truthfulqa_mc2",
     "mmlu",
     "gsm8k",
-    "wikitext",
-    "xstest"
+    "wikitext"
 ]
 
 SEEDS = [1, 10, 100, 1000, 10000]
@@ -53,8 +56,10 @@ def cleanup_gpu_memory(wrapper: ModelWrapper = None, lm_obj: HFLM = None):
         if hasattr(wrapper, "cache"):
             wrapper.cache.remove_hooks()
             wrapper.cache.clear()
-        del wrapper.model
-        del wrapper.tokenizer
+        if hasattr(wrapper, "model"):
+            del wrapper.model
+        if hasattr(wrapper, "tokenizer"):
+            del wrapper.tokenizer
         del wrapper
     gc.collect()
     torch.cuda.empty_cache()
@@ -102,8 +107,9 @@ def run_evaluation_sweep(
     model_key: str,
     config_path: str = "config/h_neurons.json",
     output_dir: str = "results/eval_outputs",
-    batch_size: int = 4,
-    limit: int = 50
+    batch_size: int = 1,
+    limit: int = 50,
+    max_length: int = 2048
 ):
     """Executes multi-seed, multi-condition benchmark sweep for a given model."""
     os.makedirs(output_dir, exist_ok=True)
@@ -113,9 +119,14 @@ def run_evaluation_sweep(
     lm_obj = None
 
     try:
-        # Load model wrapper and initialize HFLM object once
+        # Load model wrapper and initialize HFLM object with max_length truncation
         wrapper = ModelWrapper(model_key=model_key)
-        lm_obj = HFLM(pretrained=wrapper.model, tokenizer=wrapper.tokenizer, batch_size=batch_size)
+        lm_obj = HFLM(
+            pretrained=wrapper.model,
+            tokenizer=wrapper.tokenizer,
+            batch_size=batch_size,
+            max_length=max_length
+        )
         hidden_dim = wrapper.model.config.hidden_size
 
         # Shared task manager pre-loads dataset index definitions
@@ -172,6 +183,9 @@ def run_evaluation_sweep(
                     finally:
                         if hook:
                             hook.remove_hooks()
+                        # Purge intermediate memory caches between sweep conditions
+                        gc.collect()
+                        torch.cuda.empty_cache()
 
     finally:
         cleanup_gpu_memory(wrapper, lm_obj)
@@ -181,13 +195,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run evaluation sweep across ablation conditions.")
     parser.add_argument("--model_key", type=str, default="deepseek-r1-1.5b", choices=list(SUPPORTED_MODELS.keys()))
     parser.add_argument("--config_path", type=str, default="config/h_neurons.json")
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--limit", type=int, default=50, help="Number of samples per benchmark split")
+    parser.add_argument("--max_length", type=int, default=2048, help="Max context sequence length to manage VRAM")
 
     args = parser.parse_args()
     run_evaluation_sweep(
         model_key=args.model_key,
         config_path=args.config_path,
         batch_size=args.batch_size,
-        limit=args.limit
+        limit=args.limit,
+        max_length=args.max_length
     )
