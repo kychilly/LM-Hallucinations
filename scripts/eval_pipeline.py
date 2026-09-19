@@ -1,10 +1,9 @@
-import gc, torch
+import gc
+import torch
 import os
 import sys
 import json
-import torch
 import argparse
-import gc
 from pathlib import Path
 from typing import Dict, List, Any
 
@@ -196,6 +195,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run evaluation sweep across ablation conditions.")
     parser.add_argument("--model_key", type=str, default="deepseek-r1-1.5b", choices=list(SUPPORTED_MODELS.keys()))
     parser.add_argument("--config_path", type=str, default="config/h_neurons.json")
+    parser.add_argument("--output_dir", type=str, default="results/eval_outputs", help="Directory to save JSON results directly")
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--limit", type=int, default=15, help="Number of samples per benchmark split")
     parser.add_argument("--max_length", type=int, default=2048, help="Max context sequence length to manage VRAM")
@@ -204,6 +204,7 @@ if __name__ == "__main__":
     run_evaluation_sweep(
         model_key=args.model_key,
         config_path=args.config_path,
+        output_dir=args.output_dir,
         batch_size=args.batch_size,
         limit=args.limit,
         max_length=args.max_length
