@@ -45,8 +45,8 @@ EVAL_BENCHMARKS = [
     "wikitext"
 ]
 
-SEEDS = [1, 10, 100, 1000, 10000]
-K_VALUES = [1, 10, 50, 100, 200]
+SEEDS = [1, 10]
+K_VALUES = [1, 100]
 
 
 def cleanup_gpu_memory(wrapper: ModelWrapper = None, lm_obj: HFLM = None):
@@ -197,7 +197,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_key", type=str, default="deepseek-r1-1.5b", choices=list(SUPPORTED_MODELS.keys()))
     parser.add_argument("--config_path", type=str, default="config/h_neurons.json")
     parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--limit", type=int, default=50, help="Number of samples per benchmark split")
+    parser.add_argument("--limit", type=int, default=15, help="Number of samples per benchmark split")
     parser.add_argument("--max_length", type=int, default=2048, help="Max context sequence length to manage VRAM")
 
     args = parser.parse_args()
