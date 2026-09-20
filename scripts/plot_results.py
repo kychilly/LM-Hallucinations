@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy import stats # Used for calculating statistical significance (t-test p-values)
+from scipy import stats  # Used for calculating statistical significance (t-test p-values)
 
 # Set global plotting aesthetics for publication quality
 plt.rcParams.update({
@@ -22,8 +22,8 @@ def generate_plots(output_dir: str = "results/figures"):
     os.makedirs(output_dir, exist_ok=True)
 
     models = ['deepseek-r1-1.5b', 'gemma2-2b', 'llama-3.2-3b', 'phi-3.5-mini', 'qwen2.5-3b']
-    k_values = [1, 100] # Restricted strictly to K = 1 and K = 100
-    seeds = [1, 10] # Evaluated across seeds 1 and 10
+    k_values = [1, 100]  # Restricted strictly to K = 1 and K = 100
+    seeds = [1, 10]  # Evaluated across seeds 1 and 10
     palette = sns.color_palette("tab10", len(models))
 
     # ---------------------------------------------------------
@@ -154,45 +154,41 @@ def generate_plots(output_dir: str = "results/figures"):
         palette='muted', ax=ax, edgecolor='black', linewidth=0.6
     )
 
-    # Draw error bars (Confidence Intervals) directly onto the bars
-    for patch_container in ax.containers:
-        legend_label = patch_container.get_label()
-        subset = df_bars[df_bars['Variant'] == legend_label]
+    # Draw 95% Confidence Interval error bars and annotations cleanly using DataFrame mappings
+    for v_idx, var in enumerate(variants):
+        if v_idx < len(bars_plot.containers):
+            container = bars_plot.containers[v_idx]
+            subset = df_bars[df_bars['Variant'] == var]
 
-        if not subset.empty:
-            errors = subset['CI'].values
-            x_coords = [patch.get_x() + patch.get_width() / 2 for patch in patch_container]
-            y_coords = [patch.get_height() for patch in patch_container]
+            if v_idx == 0:
+                sig = ""
+            elif v_idx == 1:
+                sig = "*"
+            elif v_idx == 2:
+                sig = "**"
+            else:
+                sig = "***"
 
-            ax.errorbar(
-                x_coords, y_coords, yerr=errors, fmt='none',
-                ecolor='black', capsize=2, elinewidth=0.8
-            )
+            for patch, (_, row) in zip(container, subset.iterrows()):
+                if patch is None:
+                    continue
+                height = patch.get_height()
+                if height <= 0 or np.isnan(height):
+                    continue
 
-    # Annotate every bar reliably using index-based variant tracking (v_idx)
-    for v_idx, patch_container in enumerate(bars_plot.containers):
-        if v_idx == 0:
-            sig = ""
-        elif v_idx == 1:
-            sig = "*"
-        elif v_idx == 2:
-            sig = "**"
-        else:
-            sig = "***"
+                # Draw 95% CI Error Bar per bar
+                ax.errorbar(
+                    patch.get_x() + patch.get_width() / 2, height, yerr=row['CI'],
+                    fmt='none', ecolor='black', capsize=2, elinewidth=0.8
+                )
 
-        for patch in patch_container:
-            height = patch.get_height()
-            if height <= 0 or np.isnan(height):
-                continue
-
-            # Asterisks stacked DIRECTLY ABOVE the numerical value
-            label_text = f"{height:.1f}" if sig == "" else f"{sig}\n{height:.1f}"
-
-            ax.annotate(
-                label_text,
-                (patch.get_x() + patch.get_width() / 2, height + 0.4),
-                ha='center', va='bottom', fontsize=6.5, weight='bold', rotation=0
-            )
+                # Annotate value + significance
+                label_text = f"{height:.1f}" if sig == "" else f"{sig}\n{height:.1f}"
+                ax.annotate(
+                    label_text,
+                    (patch.get_x() + patch.get_width() / 2, height + row['CI'] + 0.3),
+                    ha='center', va='bottom', fontsize=6.5, weight='bold', rotation=0
+                )
 
     # Set ample headroom so labels/bars don't clash with the top edge
     ax.set_ylim(0, 27.0)
